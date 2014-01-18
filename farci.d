@@ -7,14 +7,21 @@ import std.process;
 import std.stdio;
 import std.string;
 
+import ae.sys.file;
+import ae.sys.persistence;
+import ae.utils.xmllite;
+
 string resolveRedirect(string url)
 {
+	Persistent!(string[string], downloadDir~"/redirects.json") cache;
+	if (url in cache)
+		return cache[url];
 	auto result = execute(["curl", "--head", url]);
 	enforce(result.status == 0, "curl failed");
 	auto lines = result.output.splitLines();
 	foreach (line; lines)
 		if (line.startsWith("Location: "))
-			return line["Location: ".length .. $];
+			return cache[url] = line["Location: ".length .. $];
 	throw new Exception("Not a redirect: " ~ lines[0]);
 }
 
@@ -24,7 +31,7 @@ void download(string url, string target)
 		return; // already downloaded
 	auto path = target.dirName;
 	if (!path.exists)
-		mkdirRecurse(path);
+		path.mkdirRecurse();
 
 	auto temp = target ~ ".temp";
 	scope(failure) if (temp.exists) temp.remove();
@@ -39,8 +46,8 @@ void download(string url, string target)
 string downloadTo(string url, string dir)
 {
 	auto fn = url.split("/")[$-1];
-	auto target = buildPath(dir, fn);
-	download(url, target);
+	auto target = dir.buildPath(fn);
+	url.download(target);
 	return target;
 }
 
@@ -54,11 +61,11 @@ void unpackTo(string archive, string dir)
 	if (temp.exists)
 		temp.rmdirRecurse();
 	scope(failure) if (temp.exists) temp.rmdirRecurse();
-	mkdirRecurse(temp);
+	temp.mkdirRecurse();
 	stderr.writeln("Extracting ", archive, " to ", dir);
 	auto status = spawnProcess(["7z", "x", "-o" ~ temp, archive]).wait();
 	enforce(status == 0, "7z failed");
-	rename(temp, dir);
+	temp.rename(dir);
 }
 
 const downloadDir = "downloads";
@@ -101,6 +108,62 @@ string decompileMSI(string msi)
 	return target;
 }
 
+void safeLink(string src, string dst)
+{
+	auto temp = dst ~ ".temp";
+	hardLink(src, temp);
+	rename(temp, dst);
+}
+
+void installWXS(string wxs, string source, string root)
+{
+	void processTag(XmlNode node, string dir)
+	{
+		switch (node.tag)
+		{
+			case "Directory":
+			{
+				auto id = node.attributes["Id"];
+				switch (id)
+				{
+					case "TARGETDIR":
+						dir = root;
+						break;
+					case "ProgramFilesFolder":
+						dir = dir.buildPath("Program Files (x86)");
+						break;
+					default:
+						if ("Name" in node.attributes)
+							dir = dir.buildPath(node.attributes["Name"]);
+						break;
+				}
+				break;
+			}
+			case "File":
+			{
+				auto src = node.attributes["Source"];
+				enforce(src.startsWith(`SourceDir\File\`));
+				src = src[`SourceDir\File\`.length .. $];
+				src = source.buildPath(src);
+				auto dst = dir.buildPath(node.attributes["Name"]);
+				stderr.writeln(src, " -> ", dst);
+				if (!dir.exists)
+					dir.mkdirRecurse();
+				safeLink(src, dst);
+				break;
+			}
+			default:
+				break;
+		}
+
+		foreach (child; node.children)
+			processTag(child, dir);
+	}
+
+	auto wxsDoc = new XmlDocument(wxs.readText());
+	processTag(wxsDoc, null);
+}
+
 struct VS
 {
 	int[] downloads;
@@ -130,12 +193,19 @@ void installVS(in VS vs)
 	foreach (msi; msis)
 	{
 		string wxs = msi.decompileMSI();
+		auto files = msi.stripExtension;
+		enforce(files.exists && files.isDir, "No files for MSI");
+
+		installWXS(wxs, files, "wine/drive_c/");
 	}
 }
 
 const VS VS2010 =
 {
-	downloads : [318460, 318461],
+	downloads : [
+		//318557, 318558, // vcRuntimeMinimum_x86
+		318460, 318461, // vc_compilerCore86
+	],
 };
 
 void main(string[] args)
