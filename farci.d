@@ -1,5 +1,6 @@
 #!/usr/bin/env rdmd
 
+import std.algorithm;
 import std.exception;
 import std.file;
 import std.path;
@@ -27,7 +28,7 @@ void downloadImpl(string url, string target)
 {
 	ensurePathExists(target);
 	stderr.writeln("Downloading: ", url);
-	auto status = spawnProcess(["curl", "--output", target, url]).wait();
+	auto status = spawnProcess(["curl", "--location", "--output", target, url]).wait();
 	enforce(status == 0, "curl failed");
 }
 alias obtainUsing!downloadImpl download;
@@ -52,6 +53,12 @@ void unpackToImpl(string archive, string target)
 	enforce(status == 0, "7z failed");
 }
 alias obtainUsing!unpackToImpl unpackTo;
+string unpack(string archive)
+{
+	string target = archive.stripExtension();
+	archive.unpackTo(target);
+	return target;
+}
 
 const downloadDir = "downloads";
 
@@ -100,8 +107,17 @@ string decompileMSI(string msi)
 
 alias obtainUsing!(hardLink!(), "dst") safeLink;
 
-void installWXS(string wxs, string source, string root)
+void installWXS(string wxs, string root)
 {
+	auto wxsDoc = wxs
+		.readText()
+		.xmlParse();
+
+	auto cab = wxsDoc["Wix"]["Product"]["Media"].attributes["Cabinet"]
+		.absolutePath(wxs.dirName.absolutePath())
+		.relativePath();
+	auto source = cab.unpack();
+
 	void processTag(XmlNode node, string dir)
 	{
 		switch (node.tag)
@@ -117,6 +133,9 @@ void installWXS(string wxs, string source, string root)
 					case "ProgramFilesFolder":
 						dir = dir.buildPath("Program Files (x86)");
 						break;
+					case "SystemFolder":
+						dir = dir.buildPath("windows", "system32");
+						break;
 					default:
 						if ("Name" in node.attributes)
 							dir = dir.buildPath(node.attributes["Name"]);
@@ -131,6 +150,8 @@ void installWXS(string wxs, string source, string root)
 				src = src[`SourceDir\File\`.length .. $];
 				src = source.buildPath(src);
 				auto dst = dir.buildPath(node.attributes["Name"]);
+				if (dst.exists)
+					break;
 				stderr.writeln(src, " -> ", dst);
 				if (!dir.exists)
 					dir.mkdirRecurse();
@@ -145,53 +166,66 @@ void installWXS(string wxs, string source, string root)
 			processTag(child, dir);
 	}
 
-	auto wxsDoc = new XmlDocument(wxs.readText());
 	processTag(wxsDoc, null);
 }
 
 struct VS
 {
-	int[] downloads;
+	int year;
+	int webInstaller;
+	string[] packages;
 }
 
 void installVS(in VS vs)
 {
-	string[] cabs, msis;
-	foreach (dl; vs.downloads)
-	{
-		auto fn = msdl(dl);
-		switch (fn.extension.toLower())
-		{
-			case ".cab":
-				cabs ~= fn;
-				break;
-			case ".msi":
-				msis ~= fn;
-				break;
-			default:
-				throw new Exception("Unexpected file extension: " ~ fn);
-		}
-	}
+	auto dir = "%s/VS%d".format(downloadDir, vs.year);
 
-	foreach (cab; cabs)
-		cab.unpackTo(cab.stripExtension);
-	foreach (msi; msis)
+	auto manifest = vs.webInstaller
+		.msdl(dir)
+		.unpack()
+		.buildPath("0")
+		.readText()
+		.xmlParse()
+		["BurnManifest"];
+
+	string[] payloadIDs;
+	foreach (node; manifest["Chain"].findChildren("MsiPackage"))
+		if (vs.packages.canFind(node.attributes["Id"]))
+			foreach (payload; node.findChildren("PayloadRef"))
+				payloadIDs ~= payload.attributes["Id"];
+
+	string[][string] files;
+	foreach (node; manifest.findChildren("Payload"))
+		if (payloadIDs.canFind(node.attributes["Id"]))
+		{
+			auto fn = dir.buildPath(node.attributes["FilePath"]);
+			node.attributes["DownloadUrl"].download(fn);
+			files[fn.extension.toLower()] ~= fn;
+		}
+
+	foreach (cab; files[".cab"])
+		cab.unpack();
+
+	foreach (msi; files[".msi"])
 	{
 		string wxs = msi.decompileMSI();
-		auto files = msi.stripExtension;
-		enforce(files.exists && files.isDir, "No files for MSI");
-
-		installWXS(wxs, files, "wine/drive_c/");
+		installWXS(wxs, "wine/drive_c/");
 	}
+
 }
 
-const VS VS2010 =
-{
-	downloads : [
-		//318557, 318558, // vcRuntimeMinimum_x86
-		318460, 318461, // vc_compilerCore86
-	],
-};
+const VS[] VSversions =
+[
+	{
+		year : 2013,
+		webInstaller : 320697,
+		packages :
+		[
+			"vcRuntimeMinimum_x86",
+			"vc_compilercore86",
+		],
+	},
+];
 
 void main(string[] args)
 {
@@ -201,5 +235,8 @@ void main(string[] args)
 
 	prepareWiX();
 
-	installVS(VS2010);
+	foreach (vs; VSversions)
+		installVS(vs);
+
+	stderr.writeln("Done.");
 }
