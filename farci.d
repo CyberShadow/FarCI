@@ -1,6 +1,7 @@
 #!/usr/bin/env rdmd
 
 import std.algorithm;
+import std.array;
 import std.exception;
 import std.file;
 import std.path;
@@ -134,7 +135,7 @@ void installWXS(string wxs, string root)
 						dir = dir.buildPath("Program Files (x86)");
 						break;
 					case "SystemFolder":
-						dir = dir.buildPath("windows", "system32");
+						dir = dir.buildPath("windows", "syswow64");
 						break;
 					default:
 						if ("Name" in node.attributes)
@@ -198,7 +199,7 @@ void installVS(in VS vs)
 	foreach (node; manifest.findChildren("Payload"))
 		if (payloadIDs.canFind(node.attributes["Id"]))
 		{
-			auto fn = dir.buildPath(node.attributes["FilePath"]);
+			auto fn = dir.buildPath(node.attributes["FilePath"].replace(`\`, `/`));
 			node.attributes["DownloadUrl"].download(fn);
 			files[fn.extension.toLower()] ~= fn;
 		}
