@@ -11,19 +11,17 @@ import ae.sys.file;
 import ae.sys.persistence;
 import ae.utils.xmllite;
 
-string resolveRedirect(string url)
+string resolveRedirectImpl(string url)
 {
-	Persistent!(string[string], downloadDir~"/redirects.json") cache;
-	if (url in cache)
-		return cache[url];
 	auto result = execute(["curl", "--head", url]);
 	enforce(result.status == 0, "curl failed");
 	auto lines = result.output.splitLines();
 	foreach (line; lines)
 		if (line.startsWith("Location: "))
-			return cache[url] = line["Location: ".length .. $];
+			return line["Location: ".length .. $];
 	throw new Exception("Not a redirect: " ~ lines[0]);
 }
+alias persistentMemoize!(resolveRedirectImpl, downloadDir~"/redirects.json") resolveRedirect;
 
 void download(string url, string target)
 {
