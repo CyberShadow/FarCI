@@ -23,21 +23,14 @@ string resolveRedirectImpl(string url)
 }
 alias persistentMemoize!(resolveRedirectImpl, downloadDir~"/redirects.json") resolveRedirect;
 
-void download(string url, string target)
+void downloadImpl(string url, string target)
 {
-	if (target.exists)
-		return; // already downloaded
-	auto path = target.dirName;
-	if (!path.exists)
-		path.mkdirRecurse();
-
-	auto temp = target ~ ".temp";
-	scope(failure) if (temp.exists) temp.remove();
+	ensurePathExists(target);
 	stderr.writeln("Downloading: ", url);
-	auto status = spawnProcess(["curl", "--output", temp, url]).wait();
+	auto status = spawnProcess(["curl", "--output", target, url]).wait();
 	enforce(status == 0, "curl failed");
-	rename(temp, target);
 }
+alias obtainUsing!downloadImpl download;
 
 /// Downloads the file at url to dir.
 /// Returns the path to the downloaded file.
@@ -51,36 +44,31 @@ string downloadTo(string url, string dir)
 
 /// Invokes 7z to unpack the give archive to the
 /// given directory, if it doesn't already exist.
-void unpackTo(string archive, string dir)
+void unpackToImpl(string archive, string target)
 {
-	if (dir.exists)
-		return;
-	auto temp = dir ~ ".temp";
-	if (temp.exists)
-		temp.rmdirRecurse();
-	scope(failure) if (temp.exists) temp.rmdirRecurse();
-	temp.mkdirRecurse();
-	stderr.writeln("Extracting ", archive, " to ", dir);
-	auto status = spawnProcess(["7z", "x", "-o" ~ temp, archive]).wait();
+	target.mkdirRecurse();
+	stderr.writeln("Extracting ", archive);
+	auto status = spawnProcess(["7z", "x", "-o" ~ target, archive]).wait();
 	enforce(status == 0, "7z failed");
-	temp.rename(dir);
 }
+alias obtainUsing!unpackToImpl unpackTo;
 
 const downloadDir = "downloads";
 
 string msdl(int n, string dir=downloadDir)
 {
-	string url = "http://go.microsoft.com/fwlink/?LinkId=%d&clcid=0x409".format(n);
-	url = url.resolveRedirect();
-	return url.downloadTo(dir);
+	return "http://go.microsoft.com/fwlink/?LinkId=%d&clcid=0x409"
+		.format(n)
+		.resolveRedirect()
+		.downloadTo(dir);
 }
 
 void prepareWiX()
 {
 	// CodePlex does not provide a direct download link
-	const url = "http://dump.thecybershadow.net/f1cbea894216f483f335f6fcaa544c30/wix38-binaries.zip";
-	auto archive = url.downloadTo(downloadDir);
-	archive.unpackTo("wix");
+	"http://dump.thecybershadow.net/f1cbea894216f483f335f6fcaa544c30/wix38-binaries.zip"
+		.downloadTo(downloadDir)
+		.unpackTo("wix");
 }
 
 version (Posix)
@@ -97,29 +85,20 @@ auto spawnWindowsProcess(string[] args)
 		return spawnProcess(["wine"] ~ args, wineEnv);
 }
 
+void decompileMSIImpl(string msi, string target)
+{
+	stderr.writeln("Decompiling ", msi);
+	auto status = spawnWindowsProcess(["wix/dark.exe", msi, "-o", target]).wait();
+	enforce(status == 0, "wix/dark failed");
+}
 string decompileMSI(string msi)
 {
 	string target = msi.setExtension(".wxs");
-	if (target.exists)
-		return target;
-
-	auto temp = target ~ ".temp";
-	if (temp.exists) temp.remove();
-	scope(failure) if (temp.exists) temp.remove();
-
-	stderr.writeln("Decompiling ", msi, " to ", target);
-	auto status = spawnWindowsProcess(["wix/dark.exe", msi, "-o", temp]).wait();
-	enforce(status == 0, "wix/dark failed");
-	rename(temp, target);
+	obtainUsing!decompileMSIImpl(msi, target);
 	return target;
 }
 
-void safeLink(string src, string dst)
-{
-	auto temp = dst ~ ".temp";
-	hardLink(src, temp);
-	rename(temp, dst);
-}
+alias obtainUsing!(hardLink!(), "dst") safeLink;
 
 void installWXS(string wxs, string source, string root)
 {
