@@ -224,6 +224,7 @@ const VS[] VSversions =
 		[
 			"vcRuntimeMinimum_x86",
 			"vc_compilercore86",
+			"vc_compilercore86res",
 		],
 	},
 ];
