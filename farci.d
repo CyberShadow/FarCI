@@ -83,10 +83,18 @@ void prepareWiX()
 	archive.unpackTo("wix");
 }
 
-string[string] wineEnv;
-static this()
+version (Posix)
 {
-	wineEnv["WINEPREFIX"] = "wine".absolutePath();
+	string[string] wineEnv;
+	static this() { wineEnv["WINEPREFIX"] = "wine".absolutePath(); }
+}
+
+auto spawnWindowsProcess(string[] args)
+{
+	version (Windows)
+		return spawnProcess(args);
+	else
+		return spawnProcess(["wine"] ~ args, wineEnv);
 }
 
 string decompileMSI(string msi)
@@ -100,8 +108,8 @@ string decompileMSI(string msi)
 	scope(failure) if (temp.exists) temp.remove();
 
 	stderr.writeln("Decompiling ", msi, " to ", target);
-	auto status = spawnProcess(["wine", "wix/dark.exe", msi, "-o", temp], wineEnv).wait();
-	enforce(status == 0, "wine wix/dark failed");
+	auto status = spawnWindowsProcess(["wix/dark.exe", msi, "-o", temp]).wait();
+	enforce(status == 0, "wix/dark failed");
 	rename(temp, target);
 	return target;
 }
